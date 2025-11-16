@@ -2,7 +2,7 @@ import asyncio
 import decimal
 from typing import Any, cast
 
-from mm_bot.strategies.dmm import DesignatedMarketMaker
+from market_maker.strategies.dmm import DesignatedMarketMaker
 
 
 class StubConnector:
