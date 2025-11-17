@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import decimal
 from typing import Any, Optional
 
@@ -35,6 +36,26 @@ class DesignatedMarketMaker(AbstractAgent):
             str(config.get("target_inventory", "0"))
         )
 
+        bootstrap_qty_raw = config.get("bootstrap_qty")
+        if bootstrap_qty_raw is not None:
+            self.bootstrap_quantity = int(
+                decimal.Decimal(str(bootstrap_qty_raw))
+            )
+            if self.bootstrap_quantity <= 0:
+                raise ValueError("bootstrap_qty must be positive")
+        else:
+            self.bootstrap_quantity = int(self.required_qty)
+
+        bootstrap_mid_raw = config.get("bootstrap_mid_price")
+        self.bootstrap_mid_price: Optional[decimal.Decimal]
+        if bootstrap_mid_raw is not None:
+            mid_price = decimal.Decimal(str(bootstrap_mid_raw))
+            if mid_price <= 0:
+                raise ValueError("bootstrap_mid_price must be positive")
+            self.bootstrap_mid_price = mid_price
+        else:
+            self.bootstrap_mid_price = None
+
         # --- Live State ---
         self.inventory = decimal.Decimal("0")
         self.last_mid_price = decimal.Decimal("0")
@@ -48,6 +69,23 @@ class DesignatedMarketMaker(AbstractAgent):
 
         # A lock to prevent race conditions during re-quoting
         self.quote_lock = asyncio.Lock()
+
+    async def run(self) -> None:
+        """Run the agent, optionally seeding the first quotes."""
+
+        bootstrap_task: Optional[asyncio.Task[None]] = None
+        if self.bootstrap_mid_price is not None:
+            bootstrap_task = asyncio.create_task(
+                self._bootstrap_initial_quotes()
+            )
+
+        try:
+            await super().run()
+        finally:
+            if bootstrap_task is not None:
+                bootstrap_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await bootstrap_task
 
     async def on_private_data(self, data: dict[str, Any]) -> None:
         """Handles fills, ACKs, and CANCELED messages."""
@@ -137,68 +175,9 @@ class DesignatedMarketMaker(AbstractAgent):
                 ):
                     return
 
-                print("Re-quoting condition met. Updating quotes...")
-
-                # --- 3. Cancel All Old Orders ---
-                # Simplest, most robust logic: always reset on any change.
-                await self._cancel_all_orders()
-                self.last_mid_price = mid_price
-
-                # --- 4. Calculate New "Fair" Price (The Skew) ---
-                # This is the DMM's risk management.
-                inventory_delta = self.inventory - self.target_inventory
-
-                # Skew = (how many shares we're off) * (skew factor)
-                # This skew is in $ terms.
-                skew = inventory_delta * self.inventory_skew_factor
-
-                # --- 5. Calculate Final Bid/Ask, Respecting "The Contract" ---
-                # Start with max_spread and skew from the current mid_price.
-                # If inventory is HIGH (long), skew is positive.
-                #   -> bid_price = mid - spread/2 - skew (less attractive bid)
-                #   -> ask_price = mid + spread/2 - skew (more attractive ask)
-                # Buyers now have an incentive to trade against our ask.
-
-                half_spread = self.max_spread / 2
-
-                bid_price = mid_price - half_spread - skew
-                ask_price = mid_price + half_spread - skew
-
-                # Round to the nearest tick size
-                bid_price = self.round_to_tick(bid_price)
-                ask_price = self.round_to_tick(ask_price)
-
-                # --- 6. Send New "Post-Only" Orders ---
-                # DMMs are "makers," so we use postOnly to guarantee
-                # we don't accidentally take liquidity.
-
-                quantity = int(self.required_qty)
-
-                print(
-                    f"Sending new quotes. Bid: {quantity} @ {bid_price}, "
-                    f"Ask: {quantity} @ {ask_price}"
-                )
-
-                # Send orders. The on_private_data handler updates open_orders.
-                await self.send_order(
-                    ticker=self.ticker,
-                    side="BUY",
-                    order_type="LIMIT",
-                    tif="GTC",
-                    quantity=quantity,
-                    price=float(bid_price),
-                    is_post_only=True,
-                    display_quantity=quantity,
-                )
-                await self.send_order(
-                    ticker=self.ticker,
-                    side="SELL",
-                    order_type="LIMIT",
-                    tif="GTC",
-                    quantity=quantity,
-                    price=float(ask_price),
-                    is_post_only=True,
-                    display_quantity=quantity,
+                await self._refresh_quotes(
+                    mid_price,
+                    reason="Re-quoting condition met. Updating quotes...",
                 )
 
             except (
@@ -227,12 +206,90 @@ class DesignatedMarketMaker(AbstractAgent):
 
     def round_to_tick(self, price: decimal.Decimal) -> decimal.Decimal:
         """Rounds a price to the nearest valid tick."""
-        return (
-            (price / self.tick_size).quantize(
-                decimal.Decimal("1."), rounding=decimal.ROUND_HALF_UP
+        if self.tick_size <= 0:
+            raise ValueError("tick_size must be positive")
+
+        with decimal.localcontext() as ctx:
+            ctx.prec = max(decimal.getcontext().prec, 28)
+            scaled = (price / self.tick_size).quantize(
+                decimal.Decimal("1"), rounding=decimal.ROUND_HALF_UP
             )
-            * self.tick_size
+            return scaled * self.tick_size
+
+    async def _refresh_quotes(
+        self,
+        mid_price: decimal.Decimal,
+        *,
+        reason: str,
+        quantity_override: Optional[int] = None,
+    ) -> None:
+        print(reason)
+
+        await self._cancel_all_orders()
+        self.last_mid_price = mid_price
+
+        inventory_delta = self.inventory - self.target_inventory
+        skew = inventory_delta * self.inventory_skew_factor
+
+        half_spread = self.max_spread / 2
+
+        bid_price = mid_price - half_spread - skew
+        ask_price = mid_price + half_spread - skew
+
+        bid_price = self.round_to_tick(bid_price)
+        ask_price = self.round_to_tick(ask_price)
+
+        base_quantity = (
+            quantity_override
+            if quantity_override is not None
+            else int(self.required_qty)
         )
+        quantity = max(base_quantity, 1)
+
+        print(
+            f"Sending new quotes. Bid: {quantity} @ {bid_price}, "
+            f"Ask: {quantity} @ {ask_price}"
+        )
+
+        result_buy = await self.send_order(
+            ticker=self.ticker,
+            side="BUY",
+            order_type="LIMIT",
+            tif="GTC",
+            quantity=quantity,
+            price=float(bid_price),
+            is_post_only=True,
+            display_quantity=quantity,
+        )
+        result_sell = await self.send_order(
+            ticker=self.ticker,
+            side="SELL",
+            order_type="LIMIT",
+            tif="GTC",
+            quantity=quantity,
+            price=float(ask_price),
+            is_post_only=True,
+            display_quantity=quantity,
+        )
+        print("Bootstrap buy result:", result_buy)
+        print("Bootstrap sell result:", result_sell)
+
+    async def _bootstrap_initial_quotes(self) -> None:
+        """Seed the order book with an initial quote if configured."""
+
+        await asyncio.sleep(1)
+        if self.bootstrap_mid_price is None:
+            return
+
+        async with self.quote_lock:
+            if self.open_orders["BUY"] or self.open_orders["SELL"]:
+                return
+
+            await self._refresh_quotes(
+                self.bootstrap_mid_price,
+                reason="Bootstrapping initial quotes...",
+                quantity_override=self.bootstrap_quantity,
+            )
 
 
 def _extract_order_id(event: dict[str, Any]) -> Optional[str]:

@@ -154,6 +154,7 @@ class MatcherConnector:
         trigger_price: Optional[float] = None,
         is_post_only: bool = False,
         display_quantity: Optional[int] = None,
+        client_order_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Submit an order to the matcher and return the response payload."""
 
@@ -167,6 +168,7 @@ class MatcherConnector:
             trigger_price=trigger_price,
             is_post_only=is_post_only,
             display_quantity=display_quantity,
+            client_order_id=client_order_id,
         )
 
         return await self._request("POST", "/api/order", json=payload)
@@ -200,6 +202,7 @@ class MatcherConnector:
         trigger_price: Optional[float],
         is_post_only: bool,
         display_quantity: Optional[int],
+        client_order_id: Optional[str],
     ) -> dict[str, Any]:
         """Translate client-friendly arguments into matcher payload."""
 
@@ -219,6 +222,9 @@ class MatcherConnector:
             "quantity": quantity,
             "postOnly": bool(is_post_only),
         }
+
+        if client_order_id is not None:
+            payload["orderId"] = client_order_id
 
         eff_display = (
             display_quantity if display_quantity is not None else quantity

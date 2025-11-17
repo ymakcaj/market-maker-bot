@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import uuid
 from typing import Any, Optional
 
 from market_bot_core.matcher import MatcherConnector
@@ -36,8 +37,14 @@ class AbstractAgent(abc.ABC):
         self._consumer_tasks: list[asyncio.Task[None]] = []
         self._connector_task: Optional[asyncio.Task[None]] = None
         self._run_lock = asyncio.Lock()
+        self._client_order_counter = 0
+        self._client_order_prefix = (
+            f"{self.__class__.__name__.lower()}-"
+            f"{uuid.uuid4().hex[:8]}"
+        )
 
     async def run(self) -> None:
+        print("Starting agent...")
         """Start the connector and forward queue events to callbacks."""
 
         async with self._run_lock:
@@ -54,10 +61,13 @@ class AbstractAgent(abc.ABC):
                     name="agent-private-consumer",
                 ),
             ]
+            print('Starting connector...')
             self._connector_task = asyncio.create_task(
                 self.connector.connect(),
                 name="agent-matcher-connector",
             )
+
+            print(self._connector_task.__str__())
 
         try:
             await asyncio.gather(self._connector_task, *self._consumer_tasks)
@@ -106,8 +116,11 @@ class AbstractAgent(abc.ABC):
         trigger_price: Optional[float] = None,
         is_post_only: bool = False,
         display_quantity: Optional[int] = None,
+        client_order_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Forward order submission to the connector."""
+
+        order_token = client_order_id or self._generate_client_order_id()
 
         return await self.connector.send_order(
             ticker=ticker,
@@ -119,12 +132,19 @@ class AbstractAgent(abc.ABC):
             trigger_price=trigger_price,
             is_post_only=is_post_only,
             display_quantity=display_quantity,
+            client_order_id=order_token,
         )
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Forward cancel requests to the connector."""
 
         return await self.connector.cancel_order(order_id)
+
+    def _generate_client_order_id(self) -> str:
+        """Generate a unique client order identifier for tracking."""
+
+        self._client_order_counter += 1
+        return f"{self._client_order_prefix}-{self._client_order_counter:06d}"
 
     async def get_account_state(self) -> dict[str, Any]:
         """Retrieve the current account snapshot via the connector."""

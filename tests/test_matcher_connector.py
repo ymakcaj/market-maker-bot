@@ -30,6 +30,7 @@ class ExposedMatcherConnector(MatcherConnector):
         trigger_price: float | None,
         is_post_only: bool,
         display_quantity: int | None,
+        client_order_id: str | None,
     ) -> dict[str, Any]:
         return self._build_order_payload(
             ticker=ticker,
@@ -41,6 +42,7 @@ class ExposedMatcherConnector(MatcherConnector):
             trigger_price=trigger_price,
             is_post_only=is_post_only,
             display_quantity=display_quantity,
+            client_order_id=client_order_id,
         )
 
 
@@ -69,6 +71,7 @@ def test_build_order_payload_maps_enums_and_fields() -> None:
                 trigger_price=None,
                 is_post_only=True,
                 display_quantity=5,
+                client_order_id="client-123",
             )
 
             assert payload["orderType"] == "Limit"
@@ -77,6 +80,7 @@ def test_build_order_payload_maps_enums_and_fields() -> None:
             assert payload["displayQuantity"] == 5
             assert payload["price"] == 101.5
             assert "triggerPrice" not in payload
+            assert payload["orderId"] == "client-123"
         finally:
             await connector.close()
 
@@ -97,6 +101,7 @@ def test_build_order_payload_defaults_display_quantity() -> None:
                 trigger_price=None,
                 is_post_only=False,
                 display_quantity=None,
+                client_order_id=None,
             )
 
             assert payload["displayQuantity"] == 7
@@ -123,6 +128,7 @@ def test_build_order_payload_validates_inputs() -> None:
                     trigger_price=None,
                     is_post_only=False,
                     display_quantity=None,
+                    client_order_id=None,
                 )
 
             with expect_raises(ValueError):
@@ -136,6 +142,7 @@ def test_build_order_payload_validates_inputs() -> None:
                     trigger_price=None,
                     is_post_only=False,
                     display_quantity=None,
+                    client_order_id=None,
                 )
         finally:
             await connector.close()

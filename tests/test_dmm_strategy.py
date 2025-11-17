@@ -31,6 +31,7 @@ class StubConnector:
         trigger_price: float | None = None,
         is_post_only: bool = False,
         display_quantity: int | None = None,
+        client_order_id: str | None = None,
     ) -> dict[str, Any]:
         order_id = f"{side.lower()}-{len(self.sent_orders) + 1}"
         entry: dict[str, Any] = {
@@ -44,9 +45,13 @@ class StubConnector:
             "trigger_price": trigger_price,
             "is_post_only": is_post_only,
             "display_quantity": display_quantity,
+            "client_order_id": client_order_id,
         }
         self.sent_orders.append(entry)
-        return {"orderId": order_id}
+        response: dict[str, Any] = {"orderId": order_id}
+        if client_order_id is not None:
+            response["clientOrderId"] = client_order_id
+        return response
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         self.cancelled_orders.append(order_id)
