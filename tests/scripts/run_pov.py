@@ -1,28 +1,23 @@
 import asyncio
 import os
-from market_maker.strategies.dmm import DesignatedMarketMaker
+from execution_trader.strategies.pov import PovExecutionAgent
 
-DMM_CONFIG = {
-    "ticker": "TEST",
-    "required_qty": "10",
-    "max_spread": "1",
-    "tick_size": "0.001",
-    "inventory_skew_factor": "0.2",
-    "target_inventory": "20",
-    "bootstrap_mid_price": "100.000",
-    "bootstrap_qty": 5,
+POV_CONFIG = {
+    "parent_order": {
+        "ticker": "TEST",
+        "side": "BUY",
+        "total_qty": "100",
+    },
+    "participation_rate": "1",
+    "slice_interval_seconds": 1.5,
 }
-
-# print(os.environ["MATCHER_API_KEY"])
 
 async def main() -> None:
     # token = os.environ["MATCHER_API_KEY"]
-    token = 'alpha-test-token'
+    token = 'beta-test-token'
 
-    print('creating agent..')
-
-    agent = DesignatedMarketMaker(
-        config=DMM_CONFIG,
+    agent = PovExecutionAgent(
+        config=POV_CONFIG,
         api_key=token,
         api_base_url=os.environ.get("MATCHER_HTTP", "http://localhost:7070"),
         ws_public_url=os.environ.get("MATCHER_WS_PUBLIC", "ws://localhost:7070/ws/public"),

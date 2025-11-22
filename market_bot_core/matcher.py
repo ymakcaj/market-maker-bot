@@ -11,20 +11,22 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.legacy.client import connect
 
 
+
 _ORDER_TYPE_MAP = {
-    "MARKET": "Market",
-    "LIMIT": "Limit",
-    "STOP_LIMIT": "StopLimit",
-    "STOP": "StopMarket",
+    "MARKET": "MARKET",
+    "LIMIT": "LIMIT",
+    "STOP_LIMIT": "STOP_LIMIT",
+    "STOP": "STOP_MARKET",
 }
 
 _TIF_MAP = {
-    "GTC": "GoodTillCancel",
-    "DAY": "Day",
-    "IOC": "ImmediateOrCancel",
-    "FOK": "FillOrKill",
-    "GTD": "GoodTillDate",
+    "GTC": "GTC",
+    "DAY": "DAY",
+    "IOC": "IOC",
+    "FOK": "FOK",
+    # "GTD": "GTD",  # Not present in Java enum, remove or leave unmapped
 }
+
 
 
 class MatcherConnector:
@@ -55,6 +57,19 @@ class MatcherConnector:
             base_url=self.api_base_url,
             headers=headers,
         )
+
+    async def get_market_state(self, ticker: str) -> dict[str, Any]:
+        """
+        Fetch the current market state (order book snapshot) for the given symbol.
+        Adjust the endpoint and response parsing to match your matcher API.
+        """
+        path = f"/api/market/{ticker}/book"
+        try:
+            state = await self._request("GET", path)
+            return state  # Should match the format expected by on_market_data
+        except Exception as exc:
+            print(f"Error fetching market state for {ticker}: {exc}")
+            return {}
 
     async def connect(self) -> None:
         """Start both websocket listeners and keep them alive."""

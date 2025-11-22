@@ -156,22 +156,22 @@ class AbstractAgent(abc.ABC):
 
         return await self.connector.get_open_orders()
 
+
     async def _consume_public_feed(self) -> None:
         while True:
             try:
                 message = await self.public_queue.get()
                 await self.on_market_data(message)
+                self.public_queue.task_done()
             except asyncio.CancelledError:
                 return
-            finally:
-                self.public_queue.task_done()
+
 
     async def _consume_private_feed(self) -> None:
         while True:
             try:
                 message = await self.private_queue.get()
                 await self.on_private_data(message)
+                self.private_queue.task_done()
             except asyncio.CancelledError:
                 return
-            finally:
-                self.private_queue.task_done()
