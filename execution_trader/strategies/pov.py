@@ -16,8 +16,10 @@ class PovExecutionAgent(AbstractAgent):
     """Execute a parent order by matching a percentage of observed volume."""
 
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
+        print('Initializing POV Execution Agent...')
         super().__init__(**kwargs)
 
+        print('Finding parent order...')
         parent_order = config.get("parent_order", {})
         try:
             total_qty = Decimal(str(parent_order["total_qty"]))
@@ -66,8 +68,13 @@ class PovExecutionAgent(AbstractAgent):
         self.exec_lock = asyncio.Lock()
         self._ticker_task: asyncio.Task[None] | None = None
 
+        print('Initialized POV Execution Agent...')
+
     async def run(self) -> None:
-        """Start the execution ticker alongside the base event loop."""
+        """Start the execution ticker and request initial market state."""
+
+        # Request the current market state before starting event loop
+        await self._prime_market_state()
 
         ticker_task = asyncio.create_task(self._run_execution_ticker())
         self._ticker_task = ticker_task
@@ -82,10 +89,49 @@ class PovExecutionAgent(AbstractAgent):
                 pass
             self._ticker_task = None
 
-    async def on_market_data(self, data: dict[str, Any]) -> None:
-        """Accumulate observed market volume from public trade messages."""
+    async def _prime_market_state(self) -> None:
+        """Fetch the current market state and process it before listening."""
+        # This assumes the connector exposes a get_market_state() method
+        if hasattr(self.connector, "get_market_state"):
+            try:
+                state = await self.connector.get_market_state(self.ticker)
+                print(f"Initial market snapshot for {self.ticker}: {state}")
+                if state:
+                    await self.on_market_data(state)
+            except Exception as exc:
+                print(f"Error fetching initial market state: {exc}")
 
-        if self.is_complete or data.get("type") != "TRADE":
+    async def on_market_data(self, data: dict[str, Any]) -> None:
+        """Accumulate observed market volume from public trade messages or act on snapshot."""
+
+        if self.is_complete:
+            return
+
+        # Act on any snapshot: send a market order at the best ask (for BUY) or best bid (for SELL)
+        if (data.get("type") == "SNAPSHOT" or (data.get("asks") and data.get("bids"))):
+            price = None
+            qty = 1
+            if self.side == "BUY" and data.get("asks"):
+                price = data["asks"][0]["price"]
+            elif self.side == "SELL" and data.get("bids"):
+                price = data["bids"][0]["price"]
+            if price is not None:
+                print(f"POV agent sending market order at price {price} for qty {qty}")
+                await self.send_order(
+                    ticker=self.ticker,
+                    side=self.side,
+                    order_type="MARKET",
+                    tif="IOC",
+                    quantity=qty,
+                    price=price,
+                    trigger_price=None,
+                    is_post_only=False,
+                    display_quantity=None,
+                )
+            return
+
+        # Existing logic for TRADE events
+        if data.get("type") != "TRADE":
             return
 
         try:
@@ -100,7 +146,7 @@ class PovExecutionAgent(AbstractAgent):
             self.market_volume_this_slice += traded_qty
 
     async def on_private_data(self, data: dict[str, Any]) -> None:
-        """Track fills against the parent order."""
+        """Track fills against the parent order and request new snapshot after each fill."""
 
         if data.get("type") != "FILL":
             return
@@ -121,6 +167,18 @@ class PovExecutionAgent(AbstractAgent):
             if self.qty_executed >= self.total_qty:
                 self.is_complete = True
                 print("PARENT ORDER COMPLETE.")
+                return
+
+        # After a fill, wait for slice_interval_seconds, then request a new market snapshot and send another trade
+        await asyncio.sleep(self.slice_interval_seconds)
+        if hasattr(self.connector, "get_market_state"):
+            try:
+                state = await self.connector.get_market_state(self.ticker)
+                print(f"Market snapshot after fill for {self.ticker}: {state}")
+                if state:
+                    await self.on_market_data(state)
+            except Exception as exc:
+                print(f"Error fetching market state after fill: {exc}")
 
     async def _run_execution_ticker(self) -> None:
         """Slice execution into periodic POV child orders."""
